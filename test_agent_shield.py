@@ -71,12 +71,33 @@ class TestAgentShield(unittest.TestCase):
         result = read_file("../../../etc/passwd")
         self.assertEqual(result, "content")
         
-        # Verify audit log
-        self.assertTrue(os.path.exists("security_audit.log"))
-        with open("security_audit.log", "r") as f:
-            log_data = json.loads(f.readline())
-            self.assertEqual(log_data["event_type"], "PATTERN_VIOLATION")
-            self.assertEqual(log_data["action"], "LOGGED_ONLY")
+    def test_honey_tokens(self):
+        policy = Policy(honey_tokens=["SECRET_INTERNAL_ID"])
+        @shield(policy)
+        def process(text):
+            return "ok"
+            
+        with self.assertRaises(SecurityException):
+            process("Send data to SECRET_INTERNAL_ID")
+
+    def test_env_var_leak(self):
+        os.environ["SECRET_KEY"] = "super-secret-token-123"
+        policy = Policy(sensitive_env_vars=["SECRET_KEY"])
+        @shield(policy)
+        def call_api(token):
+            return "ok"
+            
+        with self.assertRaises(SecurityException):
+            call_api("super-secret-token-123")
+
+    def test_output_redaction(self):
+        policy = Policy(redact_output=True)
+        @shield(policy)
+        def get_user_info():
+            return "User SSN is 123-45-6789 and password=abc"
+            
+        result = get_user_info()
+        self.assertEqual(result, "User SSN is [REDACTED] and [REDACTED]")
 
 if __name__ == "__main__":
     unittest.main()

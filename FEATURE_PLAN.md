@@ -32,5 +32,17 @@ Security tools need observability.
 ### 5. "Dry Run" / Alert-Only Mode
 - **Feature**: Allow the policy to just log the violation but still execute the function. This is critical for onboarding the shield into production without breaking existing agent workflows.
 
+### 6. Honey-Arguments (Trap Detection)
+- **Feature**: Detect if the LLM tries to use reserved "trap" keywords (honey tokens).
+- **Utility**: If the LLM mentions or tries to use these secret arguments, it's flagged as an attack or a sensitive information leak.
+
+### 7. Environment Variable Scrubbing
+- **Feature**: Automatically block arguments that contain sensitive environment variable values (e.g., `AWS_ACCESS_KEY_ID`, `DATABASE_URL`).
+- **Utility**: Prevents agents from being tricked into exfiltrating their own environment secrets.
+
+### 8. Output Redaction (Egress Control)
+- **Feature**: Redact sensitive information (PII, SSNs, passwords) from the *return value* of a function before the LLM sees it.
+- **Utility**: Prevents the LLM from accidentally learning or outputting sensitive data returned by tools.
+
 ---
-*Implementation and testing will begin immediately.*
+*Implementation and testing complete.*

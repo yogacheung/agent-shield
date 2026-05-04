@@ -30,7 +30,11 @@ class Policy:
         max_total_calls: int = None,
         max_arg_length: int = 1000,
         dry_run: bool = False,
-        audit_log_file: str = "security_audit.log"
+        audit_log_file: str = "security_audit.log",
+        honey_tokens: List[str] = None,
+        sensitive_env_vars: List[str] = None,
+        redact_output: bool = True,
+        output_redaction_patterns: List[str] = None
     ):
         self.allowed_commands = allowed_commands or []
         self.blocked_patterns = [re.compile(p) for p in (blocked_patterns or [])]
@@ -39,12 +43,16 @@ class Policy:
         self.max_arg_length = max_arg_length
         self.dry_run = dry_run
         self.audit_log_file = audit_log_file
+        self.honey_tokens = honey_tokens or []
+        self.sensitive_env_vars = sensitive_env_vars or ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "DATABASE_URL", "SECRET_KEY"]
+        self.redact_output = redact_output
+        self.output_redaction_patterns = [re.compile(p) for p in (output_redaction_patterns or [r"\b\d{3}-\d{2}-\d{4}\b", r"(?i)(password|passwd|secret|key)\s*=\s*[^\s]+"])]
         
         # State tracking
         self._call_history: List[float] = []
         self._total_calls = 0
 
-    def _log_audit(self, event_type: str, func_name: str, details: str, args: tuple, kwargs: dict):
+    def _log_audit(self, event_type: str, func_name: str, details: str, args: tuple, kwargs: dict, output: Any = None):
         event = {
             "timestamp": datetime.utcnow().isoformat(),
             "event_type": event_type,
@@ -54,6 +62,9 @@ class Policy:
             "args_preview": str(args)[:200],
             "kwargs_preview": str(kwargs)[:200]
         }
+        if output:
+            event["output_preview"] = str(output)[:200]
+            
         try:
             with open(self.audit_log_file, "a") as f:
                 f.write(json.dumps(event) + "\n")
@@ -80,11 +91,41 @@ class Policy:
                 if not self.dry_run:
                     raise QuotaExceededException(msg)
 
+    def _scrub_output(self, output: Any) -> Any:
+        if not self.redact_output or not isinstance(output, str):
+            return output
+            
+        scrubbed = output
+        for pattern in self.output_redaction_patterns:
+            scrubbed = pattern.sub("[REDACTED]", scrubbed)
+        return scrubbed
+
     def validate(self, func_name: str, *args, **kwargs):
         self._enforce_quotas(func_name, args, kwargs)
 
         all_strings = [str(a) for a in args] + [str(v) for v in kwargs.values()]
         
+        # Check for Honey Tokens
+        for s in all_strings:
+            for token in self.honey_tokens:
+                if token in s:
+                    msg = f"Honey token '{token}' detected in arguments. Possible probe or leak."
+                    self._log_audit("HONEY_TOKEN_DETECTION", func_name, msg, args, kwargs)
+                    if not self.dry_run:
+                        raise SecurityException(msg)
+
+        # Check for Sensitive Env Vars
+        import os
+        for env_var in self.sensitive_env_vars:
+            val = os.getenv(env_var)
+            if val and len(val) > 4: # Only check if value is substantial
+                for s in all_strings:
+                    if val in s:
+                        msg = f"Sensitive environment variable value ({env_var}) detected in arguments."
+                        self._log_audit("ENV_VAR_LEAK", func_name, msg, args, kwargs)
+                        if not self.dry_run:
+                            raise SecurityException(msg)
+
         for s in all_strings:
             if len(s) > self.max_arg_length:
                 msg = f"Argument length ({len(s)}) exceeds maximum allowed ({self.max_arg_length})"
@@ -113,6 +154,15 @@ def shield(policy: Policy):
         def wrapper(*args, **kwargs):
             logger.info(f"Agent Shield intercepting call to {func.__name__}")
             policy.validate(func.__name__, *args, **kwargs)
-            return func(*args, **kwargs)
+            result = func(*args, **kwargs)
+            
+            # Post-execution output scrubbing
+            if policy.redact_output:
+                scrubbed_result = policy._scrub_output(result)
+                if scrubbed_result != result:
+                    logger.warning(f"Agent Shield redacted sensitive information from {func.__name__} output")
+                    policy._log_audit("OUTPUT_REDACTION", func.__name__, "Sensitive info redacted from output", args, kwargs, output=result)
+                    return scrubbed_result
+            return result
         return wrapper
     return decorator
