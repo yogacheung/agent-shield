@@ -36,9 +36,35 @@ print(execute_system_command("ls -la; cat /etc/passwd"))
 
 ## Features
 - **Zero Dependencies**: Pure Python implementation.
-- **Regex Blocking**: Block complex injection patterns.
-- **Type Enforcement**: Ensure the LLM didn't hallucinate invalid types.
-- **Audit Logging**: Log all blocked attempts for threat analysis.
+- **Pre-configured Threat Signatures**: Built-in protection against Bash Injection, SQL Injection, Path Traversal, and Prompt Leaks.
+- **Execution Quotas**: Prevent runaway agents with rate limiting and total call quotas.
+- **Argument Constraints**: Enforce maximum string lengths to prevent buffer overruns or logic abuse.
+- **JSON Audit Logging**: Structured logs for security monitoring and SIEM integration.
+- **Dry Run Mode**: Test your security policies without breaking existing workflows.
+
+## Usage
+```python
+from agent_shield import shield, Policy, ThreatSignatures
+
+# Define a robust security policy
+policy = Policy(
+    allowed_commands=["ls", "echo"],
+    blocked_patterns=[ThreatSignatures.BASH_INJECTION, ThreatSignatures.PROMPT_LEAKS],
+    max_calls_per_minute=10,
+    max_arg_length=500
+)
+
+@shield(policy=policy)
+def execute_system_command(command: str):
+    import os
+    return os.popen(command).read()
+
+# This will be blocked by ThreatSignatures.BASH_INJECTION
+try:
+    execute_system_command("ls; rm -rf /")
+except Exception as e:
+    print(f"Security Alert: {e}")
+```
 
 ## Contributing
 We welcome contributions! Please see `CONTRIBUTING.md` for details.
