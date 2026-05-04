@@ -34,7 +34,8 @@ class Policy:
         honey_tokens: List[str] = None,
         sensitive_env_vars: List[str] = None,
         redact_output: bool = True,
-        output_redaction_patterns: List[str] = None
+        output_redaction_patterns: List[str] = None,
+        webhook_url: str = None
     ):
         self.allowed_commands = allowed_commands or []
         self.blocked_patterns = [re.compile(p) for p in (blocked_patterns or [])]
@@ -47,10 +48,28 @@ class Policy:
         self.sensitive_env_vars = sensitive_env_vars or ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "DATABASE_URL", "SECRET_KEY"]
         self.redact_output = redact_output
         self.output_redaction_patterns = [re.compile(p) for p in (output_redaction_patterns or [r"\b\d{3}-\d{2}-\d{4}\b", r"(?i)(password|passwd|secret|key)\s*=\s*[^\s]+"])]
+        self.webhook_url = webhook_url
         
         # State tracking
         self._call_history: List[float] = []
         self._total_calls = 0
+
+    def __call__(self, *args, **kwargs):
+        """Allows using policy(arg1, arg2) to manually validate data outside of a function call."""
+        return self.validate("manual_validation", *args, **kwargs)
+
+    @classmethod
+    def from_env(cls):
+        """Initialize policy from environment variables for zero-config deployment."""
+        import os
+        return cls(
+            allowed_commands=os.getenv("SHIELD_ALLOWED_COMMANDS", "").split(",") if os.getenv("SHIELD_ALLOWED_COMMANDS") else None,
+            max_calls_per_minute=int(os.getenv("SHIELD_MAX_CALLS_MIN")) if os.getenv("SHIELD_MAX_CALLS_MIN") else None,
+            max_total_calls=int(os.getenv("SHIELD_MAX_TOTAL_CALLS")) if os.getenv("SHIELD_MAX_TOTAL_CALLS") else None,
+            max_arg_length=int(os.getenv("SHIELD_MAX_ARG_LEN", "1000")),
+            dry_run=os.getenv("SHIELD_DRY_RUN", "false").lower() == "true",
+            webhook_url=os.getenv("SHIELD_WEBHOOK_URL")
+        )
 
     def _log_audit(self, event_type: str, func_name: str, details: str, args: tuple, kwargs: dict, output: Any = None):
         event = {
@@ -65,11 +84,26 @@ class Policy:
         if output:
             event["output_preview"] = str(output)[:200]
             
+        # 1. Local File Logging
         try:
             with open(self.audit_log_file, "a") as f:
                 f.write(json.dumps(event) + "\n")
         except Exception as e:
             logger.error(f"Failed to write to audit log: {e}")
+
+        # 2. Webhook Logging (Remote SIEM/SOC)
+        if self.webhook_url:
+            import urllib.request
+            try:
+                req = urllib.request.Request(
+                    self.webhook_url, 
+                    data=json.dumps(event).encode(),
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=2) as response:
+                    pass
+            except Exception as e:
+                logger.error(f"Failed to send security webhook: {e}")
 
     def _enforce_quotas(self, func_name: str, args: tuple, kwargs: dict):
         now = time.time()
@@ -148,21 +182,35 @@ class Policy:
                 if not self.dry_run:
                     raise SecurityException(msg)
 
-def shield(policy: Policy):
-    def decorator(func: Callable):
+class shield:
+    """
+    Shield can be used as a decorator or a context manager.
+    
+    Usage as context manager:
+    with shield(policy):
+        dangerous_logic()
+    """
+    def __init__(self, policy: Policy):
+        self.policy = policy
+
+    def __call__(self, func: Callable):
         @wraps(func)
         def wrapper(*args, **kwargs):
             logger.info(f"Agent Shield intercepting call to {func.__name__}")
-            policy.validate(func.__name__, *args, **kwargs)
+            self.policy.validate(func.__name__, *args, **kwargs)
             result = func(*args, **kwargs)
             
-            # Post-execution output scrubbing
-            if policy.redact_output:
-                scrubbed_result = policy._scrub_output(result)
+            if self.policy.redact_output:
+                scrubbed_result = self.policy._scrub_output(result)
                 if scrubbed_result != result:
                     logger.warning(f"Agent Shield redacted sensitive information from {func.__name__} output")
-                    policy._log_audit("OUTPUT_REDACTION", func.__name__, "Sensitive info redacted from output", args, kwargs, output=result)
+                    self.policy._log_audit("OUTPUT_REDACTION", func.__name__, "Sensitive info redacted from output", args, kwargs, output=result)
                     return scrubbed_result
             return result
         return wrapper
-    return decorator
+
+    def __enter__(self):
+        return self.policy
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass

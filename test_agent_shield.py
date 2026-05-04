@@ -43,7 +43,6 @@ class TestAgentShield(unittest.TestCase):
         def db_query(query):
             return "success"
         
-        # In my ThreatSignatures.SQL_INJECTION, I added 'OR 1=1'
         with self.assertRaises(SecurityException):
             db_query("admin' OR 1=1 --")
 
@@ -98,6 +97,26 @@ class TestAgentShield(unittest.TestCase):
             
         result = get_user_info()
         self.assertEqual(result, "User SSN is [REDACTED] and [REDACTED]")
+
+    def test_from_env(self):
+        os.environ["SHIELD_ALLOWED_COMMANDS"] = "ls,grep"
+        os.environ["SHIELD_MAX_CALLS_MIN"] = "5"
+        os.environ["SHIELD_DRY_RUN"] = "true"
+        
+        policy = Policy.from_env()
+        self.assertEqual(policy.allowed_commands, ["ls", "grep"])
+        self.assertEqual(policy.max_calls_per_minute, 5)
+        self.assertTrue(policy.dry_run)
+
+    def test_context_manager(self):
+        policy = Policy(max_total_calls=1)
+        
+        with shield(policy):
+            policy.validate("manual", "safe input")
+            
+        with self.assertRaises(QuotaExceededException):
+            with shield(policy):
+                policy.validate("manual", "will fail")
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,10 +41,19 @@ policy = Policy(
     redact_output=True
 )
 
+# Usage as a Decorator
 @shield(policy=policy)
 def query_db(query: str):
-    # Simulated sensitive return value
-    return f"Result for {query}: User SSN is 123-45-6789 and password=xyz123"
+    return f"Result for {query}"
+
+# Usage as a Context Manager
+with shield(policy):
+    # Any data validation inside this block
+    policy.validate("manual_check", "some user input")
+
+# Zero-Config Deployment (Load from Environment Variables)
+# SHIELD_ALLOWED_COMMANDS=ls,grep SHIELD_DRY_RUN=true python app.py
+env_policy = Policy.from_env()
 
 # 1. Blocked by ThreatSignatures.SQL_INJECTION
 try:
